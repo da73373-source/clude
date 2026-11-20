@@ -30,3 +30,10 @@ python3 -m http.server 8000
 ## データソース
 
 地震データは [USGS FDSN Event Web Service](https://earthquake.usgs.gov/fdsnws/event/1/) から取得しています。
+
+---
+
+## 壁のひび割れ検出アプリ
+
+[`crack-detector/`](crack-detector/) に、家の壁の写真からひび割れを検出するアプリがあります。
+詳細は [crack-detector/README.md](crack-detector/README.md) を参照してください。

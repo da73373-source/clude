@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>壁のひび割れ検出</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>壁のひび割れ検出</h1>
+    <p class="subtitle">写真から外壁・内壁・基礎のひび割れを検出し、長さと幅の目安を表示します。画像は端末内で処理され、外部に送信されません。</p>
+  </header>
+
+  <main class="app-body">
+    <aside class="panel">
+      <label id="drop-zone" class="drop-zone" for="file-input">
+        <input type="file" id="file-input" accept="image/*" capture="environment" hidden>
+        <strong>写真を選択 / 撮影</strong>
+        <span>またはここに画像をドロップ</span>
+      </label>
+      <button type="button" id="sample-btn" class="btn-secondary">サンプル画像で試す</button>
+
+      <section class="settings">
+        <h2>検出設定</h2>
+        <div class="field">
+          <label for="sensitivity">感度: <span id="sensitivity-value"></span></label>
+          <input type="range" id="sensitivity" min="0" max="100" step="5">
+          <small>上げると薄いひびも拾いますが、模様や汚れの誤検出も増えます</small>
+        </div>
+        <div class="field">
+          <label for="min-length">最小の長さ: <span id="min-length-value"></span></label>
+          <input type="range" id="min-length" min="1" max="20" step="1">
+        </div>
+        <div class="field">
+          <label for="elongation">細長さの下限: <span id="elongation-value"></span></label>
+          <input type="range" id="elongation" min="2" max="20" step="1">
+          <small>シミや穴など丸い暗部を除外します</small>
+        </div>
+        <label class="check"><input type="checkbox" id="connect"> 途切れたひびをつなげる</label>
+
+        <h2>実寸の設定(任意)</h2>
+        <div class="field">
+          <label for="real-width">写真の横幅に写っている実際の長さ</label>
+          <div class="input-unit"><input type="number" id="real-width" min="0" step="0.1" placeholder="例: 30"><span>cm</span></div>
+          <small>入力すると幅を mm で表示し、危険度を判定します。定規やクラックスケールを写し込むと正確です。</small>
+        </div>
+      </section>
+    </aside>
+
+    <section class="viewer">
+      <div class="toolbar">
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-view="result">検出結果</button>
+          <button type="button" class="tab" data-view="original">元画像</button>
+          <button type="button" class="tab" data-view="mask">二値画像</button>
+        </div>
+        <button type="button" id="download-btn" class="btn-secondary" disabled>結果を保存</button>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <p id="placeholder" class="placeholder">写真を選択すると、ここに検出結果が表示されます</p>
+      </div>
+
+      <div id="summary" class="summary" hidden></div>
+      <div class="table-wrap">
+        <table id="result-table" hidden>
+          <thead>
+            <tr><th>No.</th><th>長さ</th><th>平均幅</th><th>最大幅</th><th>判定</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <details class="guide">
+        <summary>判定基準と撮影のコツ</summary>
+        <ul>
+          <li><b>ヘアクラック(幅0.3mm未満)</b>: 乾燥収縮などによる表面の細いひび。経過観察で可。</li>
+          <li><b>要注意(0.3〜0.5mm)</b>: 雨水が浸入する可能性。補修を検討。</li>
+          <li><b>要点検(0.5mm以上)</b>: 構造的なひび割れの可能性。専門家への相談を推奨。</li>
+          <li>壁に正対し、ひびに近づいて撮影すると幅の精度が上がります(0.3mmを判定するには、写真の横幅が15cm程度になる距離が目安)。</li>
+          <li>斜めからの光や影、目地・タイルの継ぎ目は誤検出の原因になります。</li>
+        </ul>
+        <p class="note">※本アプリの結果は画像処理による簡易的な目安です。建物の安全性の判断は、専門家による調査を受けてください。</p>
+      </details>
+    </section>
+  </main>
+
+  <script src="detector.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
