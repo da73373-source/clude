@@ -22,6 +22,13 @@
       <button type="button" id="sample-btn" class="btn-secondary">サンプル画像で試す</button>
 
       <section class="settings">
+        <h2>検出方式</h2>
+        <div class="tabs mode-tabs" role="radiogroup">
+          <button type="button" class="tab active" data-mode="ai">AI(高精度)</button>
+          <button type="button" class="tab" data-mode="classic">画像処理(軽量)</button>
+        </div>
+        <small id="mode-note" class="note"></small>
+
         <h2>検出設定</h2>
         <div class="field">
           <label for="sensitivity">感度: <span id="sensitivity-value"></span></label>
@@ -59,6 +66,7 @@
       </div>
       <div class="canvas-wrap">
         <canvas id="canvas"></canvas>
+        <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text">解析中…</span></div>
         <p id="placeholder" class="placeholder">写真を選択すると、ここに検出結果が表示されます</p>
       </div>
 
@@ -86,6 +94,7 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
   <script src="detector.js"></script>
   <script src="app.js"></script>
 </body>

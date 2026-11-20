@@ -118,6 +118,15 @@ body {
   overflow: hidden;
 }
 #canvas { max-width: 100%; max-height: 70vh; display: block; }
+.mode-tabs { margin-bottom: 6px; }
+.mode-tabs .tab { flex: 1; }
+.busy {
+  position: absolute; inset: auto 12px 12px auto; display: flex; align-items: center; gap: 8px;
+  background: var(--panel-bg); border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px; font-size: 0.85rem;
+}
+.busy[hidden] { display: none; }
+.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .placeholder { position: absolute; color: var(--text-muted); margin: 0; padding: 16px; text-align: center; }
 
 .summary {

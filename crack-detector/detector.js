@@ -217,7 +217,13 @@
     return Math.max(len, pixels.length ? 1 : 0);
   }
 
-  function detect(imageData, options) {
+  /**
+   * ひび割れ検出
+   * @param imageData 入力画像
+   * @param options   設定
+   * @param prob      AIモデルのひび確率マップ(0〜1, 省略時は画像処理で候補を作る)
+   */
+  function detect(imageData, options, prob) {
     const opt = Object.assign({}, DEFAULTS, options || {});
     const { width: w, height: h } = imageData;
     const diag = Math.hypot(w, h);
@@ -237,13 +243,41 @@
     }
     const sd = Math.sqrt(Math.max(1e-6, sum2 / diff.length - (sum / diff.length) ** 2));
 
-    // 3. 二値化:感度が高いほど閾値を下げる(表面のザラつきの標準偏差を基準)
-    const k = 4.5 - (opt.sensitivity / 100) * 3.5;  // 4.5σ 〜 1.0σ
-    const thr = Math.max(4, k * sd);
+    // 3. 二値化
     let mask = new Uint8Array(w * h);
-    for (let i = 0; i < mask.length; i++) mask[i] = diff[i] > thr ? 1 : 0;
+    let thr;
+    if (prob) {
+      // AI: ヒステリシス二値化(確実な画素を起点に、やや弱い画素までつなげる)
+      thr = 0.8 - (opt.sensitivity / 100) * 0.6;   // 感度50で0.5
+      const weak = thr * 0.6;
+      const stack = [];
+      for (let i = 0; i < mask.length; i++) if (prob[i] > thr) { mask[i] = 1; stack.push(i); }
+      while (stack.length) {
+        const p = stack.pop();
+        const x = p % w, y = (p - x) / w;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const q = yy * w + xx;
+            if (!mask[q] && prob[q] > weak) { mask[q] = 1; stack.push(q); }
+          }
+        }
+      }
+    } else {
+      // 画像処理: 表面のざらつき(標準偏差)を基準に閾値を決める
+      const k = 4.5 - (opt.sensitivity / 100) * 3.5;  // 4.5σ 〜 1.0σ
+      thr = Math.max(4, k * sd);
+      for (let i = 0; i < mask.length; i++) mask[i] = diff[i] > thr ? 1 : 0;
+    }
     if (opt.connect) mask = erode(dilate(mask, w, h), w, h);
 
+    return analyze(mask, diff, w, h, opt, diag, thr);
+  }
+
+  function analyze(mask, diff, w, h, opt, diag, thr) {
     // 4. 連結成分と粗い足切り
     const minLen = (opt.minLengthPct / 100) * diag;
     const { labels, comps } = label(mask, w, h);

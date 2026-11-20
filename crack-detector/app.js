@@ -21,7 +21,104 @@
     table: $("result-table"),
   };
 
-  const state = { source: null, result: null, view: "result", selected: 0 };
+  const state = { source: null, result: null, view: "result", selected: 0, mode: "ai", prob: null, runId: 0 };
+
+  // ---- AIモデル(U-Net, ONNX)----
+  const MODEL_URL = "model/crack-unet.onnx";
+  const AI_MAX_SIDE = 1024; // AI推論の解像度上限(速度とのバランス)
+  const TILE = 512, OVERLAP = 48;
+  let sessionPromise = null;
+
+  function getSession() {
+    if (!sessionPromise) {
+      if (typeof ort === "undefined") return Promise.reject(new Error("onnxruntime-web を読み込めませんでした"));
+      ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+      sessionPromise = ort.InferenceSession.create(MODEL_URL, { executionProviders: ["wasm"] });
+      sessionPromise.catch(() => { sessionPromise = null; });
+    }
+    return sessionPromise;
+  }
+
+  function tileStarts(len) {
+    if (len <= TILE) return [0];
+    const out = [];
+    for (let x = 0; ; x += TILE - OVERLAP * 2) {
+      if (x + TILE >= len) { out.push(len - TILE); break; }
+      out.push(x);
+    }
+    return out;
+  }
+
+  // 画像を縮小 → タイル分割して推論 → 元の処理解像度へ拡大した確率マップを返す
+  async function predict(source, onProgress) {
+    const session = await getSession();
+    const { width: W, height: H } = source.imageData;
+    const s = Math.min(1, AI_MAX_SIDE / Math.max(W, H));
+    const w = Math.round(W * s), h = Math.round(H * s);
+    const small = document.createElement("canvas");
+    small.width = w; small.height = h;
+    const sctx = small.getContext("2d");
+    sctx.drawImage(source.canvas, 0, 0, w, h);
+    const px = sctx.getImageData(0, 0, w, h).data;
+
+    const acc = new Float32Array(w * h), cnt = new Float32Array(w * h);
+    const xs = tileStarts(w), ys = tileStarts(h);
+    let done = 0;
+    for (const ty of ys) {
+      for (const tx of xs) {
+        const tw = Math.min(TILE, w), th = Math.min(TILE, h);
+        const pw = Math.ceil(tw / 16) * 16, ph = Math.ceil(th / 16) * 16;
+        const input = new Float32Array(3 * pw * ph);
+        const plane = pw * ph;
+        for (let y = 0; y < ph; y++) {
+          const sy = ty + Math.min(y, th - 1);
+          for (let x = 0; x < pw; x++) {
+            const p = (sy * w + tx + Math.min(x, tw - 1)) * 4, o = y * pw + x;
+            input[o] = px[p] / 255; input[plane + o] = px[p + 1] / 255; input[2 * plane + o] = px[p + 2] / 255;
+          }
+        }
+        const out = await session.run({ image: new ort.Tensor("float32", input, [1, 3, ph, pw]) });
+        const prob = out.prob.data;
+        for (let y = 0; y < th; y++) {
+          for (let x = 0; x < tw; x++) {
+            const i = (ty + y) * w + tx + x;
+            acc[i] += prob[y * pw + x]; cnt[i] += 1;
+          }
+        }
+        onProgress && onProgress(++done / (xs.length * ys.length));
+      }
+    }
+    for (let i = 0; i < acc.length; i++) acc[i] /= cnt[i];
+    if (w === W && h === H) return acc;
+
+    // 双線形補間で処理解像度へ戻す
+    const full = new Float32Array(W * H);
+    const fx = (w - 1) / Math.max(1, W - 1), fy = (h - 1) / Math.max(1, H - 1);
+    for (let y = 0; y < H; y++) {
+      const gy = y * fy, y0 = Math.floor(gy), y1 = Math.min(h - 1, y0 + 1), ay = gy - y0;
+      for (let x = 0; x < W; x++) {
+        const gx = x * fx, x0 = Math.floor(gx), x1 = Math.min(w - 1, x0 + 1), ax = gx - x0;
+        full[y * W + x] =
+          (acc[y0 * w + x0] * (1 - ax) + acc[y0 * w + x1] * ax) * (1 - ay) +
+          (acc[y1 * w + x0] * (1 - ax) + acc[y1 * w + x1] * ax) * ay;
+      }
+    }
+    return full;
+  }
+
+  const busy = $("busy"), busyText = $("busy-text"), modeNote = $("mode-note");
+  const MODE_NOTES = {
+    ai: "ひび割れ写真で学習したAIモデルで判定します。初回はモデルの読み込みに数秒かかります。",
+    classic: "周囲より暗い細い線を画像処理で抽出します。高速ですが、薄いひびの見逃しや模様の誤検出が多めです。",
+  };
+  function setMode(mode) {
+    state.mode = mode;
+    document.querySelectorAll(".mode-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.mode === mode));
+    modeNote.textContent = MODE_NOTES[mode];
+    runDetection();
+  }
+  document.querySelectorAll(".mode-tabs .tab").forEach((t) => t.addEventListener("click", () => setMode(t.dataset.mode)));
+  modeNote.textContent = MODE_NOTES.ai;
 
   // ---- 設定の初期化 ----
   const D = CrackDetector.DEFAULTS;
@@ -55,6 +152,7 @@
     off.width = w; off.height = h;
     off.getContext("2d").drawImage(img, 0, 0, w, h);
     state.source = { canvas: off, imageData: off.getContext("2d").getImageData(0, 0, w, h) };
+    state.prob = null;
     canvas.width = w; canvas.height = h;
     ui.placeholder.hidden = true;
     runDetection();
@@ -76,14 +174,35 @@
   [ui.sensitivity, ui.minLength, ui.elongation, ui.connect].forEach((el) => el.addEventListener("input", scheduleDetection));
   ui.realWidth.addEventListener("input", () => { if (state.result) { render(); renderReport(); } });
 
-  function runDetection() {
+  async function runDetection() {
     if (!state.source) return;
-    state.result = CrackDetector.detect(state.source.imageData, {
+    const id = ++state.runId;
+    const source = state.source;
+    let prob = null;
+    if (state.mode === "ai") {
+      if (!state.prob) {
+        busy.hidden = false;
+        busyText.textContent = "AIモデルを準備中…";
+        try {
+          const p = await predict(source, (r) => { busyText.textContent = `AIで解析中… ${Math.round(r * 100)}%`; });
+          if (source === state.source) state.prob = p;
+        } catch (e) {
+          console.error(e);
+          busy.hidden = true;
+          modeNote.textContent = "AIモデルを読み込めなかったため、画像処理で検出しました(index.html を直接開いた場合は、README の手順でローカルサーバーから開いてください)。";
+          if (id === state.runId) { state.mode = "classic"; document.querySelectorAll(".mode-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.mode === "classic")); }
+        }
+        busy.hidden = true;
+      }
+      if (id !== state.runId || source !== state.source) return; // 新しい処理が始まっていたら破棄
+      prob = state.mode === "ai" ? state.prob : null;
+    }
+    state.result = CrackDetector.detect(source.imageData, {
       sensitivity: +ui.sensitivity.value,
       minLengthPct: +ui.minLength.value,
       minElongation: +ui.elongation.value,
       connect: ui.connect.checked,
-    });
+    }, prob);
     state.selected = 0;
     ui.download.disabled = false;
     render();
