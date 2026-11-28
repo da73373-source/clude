@@ -1,0 +1,5 @@
+# XcodeGen で生成する
+CrackDetector.xcodeproj/
+TestResults.xcresult/
+xcodebuild.log
+DerivedData/

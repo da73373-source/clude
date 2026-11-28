@@ -1,0 +1,61 @@
+name: iOS build & test
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          ios=[(k,v) for k,v in d.items() if 'iOS' in k]
+          ios.sort(key=lambda kv: [int(x) for x in kv[0].split('iOS-')[-1].split('-')])
+          for k,v in reversed(ios):
+              phones=[x for x in v if x['name'].startswith('iPhone')]
+              if phones: print(phones[0]['udid']); break")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$UDID"
+
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project CrackDetector.xcodeproj \
+            -scheme CrackDetector \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild.log | grep -E "error:|warning: .*CrackDetector/|Test Case|crack[0-9]:|sample:|Core ML|TEST (SUCCEEDED|FAILED)|\*\* (BUILD|TEST)" 
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: |
+            ios/xcodebuild.log
+            ios/TestResults.xcresult
