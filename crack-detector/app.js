@@ -21,7 +21,8 @@
     table: $("result-table"),
   };
 
-  const state = { source: null, result: null, view: "result", selected: 0, mode: "ai", prob: null, runId: 0 };
+  const state = { source: null, result: null, view: "result", selected: 0, mode: "ai", prob: null, runId: 0,
+                  calib: { active: false, pts: [] } };
 
   // ---- AIモデル(U-Net, ONNX)----
   const MODEL_URL = "model/crack-unet.onnx";
@@ -153,6 +154,7 @@
     off.getContext("2d").drawImage(img, 0, 0, w, h);
     state.source = { canvas: off, imageData: off.getContext("2d").getImageData(0, 0, w, h) };
     state.prob = null;
+    resetCalibration();
     canvas.width = w; canvas.height = h;
     ui.placeholder.hidden = true;
     runDetection();
@@ -172,7 +174,76 @@
     timer = setTimeout(runDetection, 150);
   }
   [ui.sensitivity, ui.minLength, ui.elongation, ui.connect].forEach((el) => el.addEventListener("input", scheduleDetection));
-  ui.realWidth.addEventListener("input", () => { if (state.result) { render(); renderReport(); } });
+  ui.realWidth.addEventListener("input", refreshScale);
+
+  // ---- 定規の2点で縮尺を合わせる ----
+  const calib = { btn: $("calib-btn"), box: $("calib-input"), px: $("calib-px"), mm: $("calib-mm"), clear: $("calib-clear"), note: $("calib-note") };
+  const CALIB_NOTE = calib.note.textContent;
+
+  function calibDistance() {
+    const p = state.calib.pts;
+    return p.length === 2 ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) : null;
+  }
+  function refreshScale() {
+    if (!state.result) return;
+    render(); renderReport();
+    const s = mmPerPx(), mm = parseFloat(calib.mm.value);
+    calib.note.classList.toggle("scale-ok", !!s);
+    calib.note.textContent = s && mm > 0 && calibDistance() ? `定規の2点(${mm} mm)で縮尺を設定中: 1px = ${s.toFixed(3)} mm`
+      : s ? `写真の横幅で縮尺を設定中: 1px = ${s.toFixed(3)} mm` : CALIB_NOTE;
+  }
+  function resetCalibration() {
+    state.calib = { active: false, pts: [] };
+    calib.mm.value = "";
+    calib.box.hidden = true;
+    calib.btn.classList.remove("active");
+    calib.btn.textContent = "定規の2点を指定";
+    canvas.classList.remove("calibrating");
+    calib.btn.disabled = !state.source;
+  }
+  calib.btn.addEventListener("click", () => {
+    state.calib = { active: true, pts: [] };
+    calib.box.hidden = true;
+    calib.btn.classList.add("active");
+    calib.btn.textContent = "画像上の目盛りを2点クリック (0/2)";
+    canvas.classList.add("calibrating");
+    if (state.view === "mask") setView("original"); else render();
+  });
+  calib.clear.addEventListener("click", () => { resetCalibration(); refreshScale(); });
+  calib.mm.addEventListener("input", refreshScale);
+  canvas.addEventListener("click", (e) => {
+    if (!state.calib.active) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * canvas.width / rect.width;
+    const y = (e.clientY - rect.top) * canvas.height / rect.height;
+    state.calib.pts.push({ x, y });
+    calib.btn.textContent = `画像上の目盛りを2点クリック (${state.calib.pts.length}/2)`;
+    if (state.calib.pts.length === 2) {
+      state.calib.active = false;
+      calib.btn.classList.remove("active");
+      calib.btn.textContent = "2点を指定し直す";
+      canvas.classList.remove("calibrating");
+      calib.box.hidden = false;
+      calib.px.textContent = `2点の間 ${calibDistance().toFixed(0)} px =`;
+      calib.mm.focus();
+    }
+    refreshScale();
+  });
+
+  function drawCalibration() {
+    const p = state.calib.pts;
+    if (!p.length) return;
+    const lw = Math.max(2, canvas.width / 400);
+    ctx.save();
+    ctx.strokeStyle = "#06b6d4"; ctx.fillStyle = "rgba(6,182,212,0.35)"; ctx.lineWidth = lw;
+    if (p.length === 2) {
+      ctx.setLineDash([lw * 4, lw * 3]);
+      ctx.beginPath(); ctx.moveTo(p[0].x, p[0].y); ctx.lineTo(p[1].x, p[1].y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const q of p) { ctx.beginPath(); ctx.arc(q.x, q.y, lw * 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+    ctx.restore();
+  }
 
   async function runDetection() {
     if (!state.source) return;
@@ -211,6 +282,9 @@
 
   // 1画素あたりの mm(実寸未入力なら null)
   function mmPerPx() {
+    // 定規による縮尺を優先
+    const mm = parseFloat(calib.mm.value), dist = calibDistance();
+    if (mm > 0 && dist >= 5) return mm / dist;
     const cm = parseFloat(ui.realWidth.value);
     if (!state.result || !(cm > 0)) return null;
     return (cm * 10) / state.result.width;
@@ -246,7 +320,7 @@
     }
 
     ctx.drawImage(state.source.canvas, 0, 0);
-    if (state.view === "original") return;
+    if (state.view === "original" || state.calib.active) { drawCalibration(); return; }
 
     // ひび画素を危険度色で塗る
     const colors = r.cracks.map((c) => hexToRgb(crackInfo(c).cls.color));
@@ -287,6 +361,7 @@
       ctx.fillStyle = "#fff";
       ctx.fillText(label, lx + 5, ly + 3);
     });
+    drawCalibration();
   }
 
   function renderReport() {

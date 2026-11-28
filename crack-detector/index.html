@@ -48,7 +48,17 @@
 
         <h2>実寸の設定(任意)</h2>
         <div class="field">
-          <label for="real-width">写真の横幅に写っている実際の長さ</label>
+          <label>定規で合わせる(おすすめ)</label>
+          <button type="button" id="calib-btn" class="btn-secondary calib-btn" disabled>定規の2点を指定</button>
+          <div id="calib-input" class="input-unit calib-input" hidden>
+            <span id="calib-px"></span>
+            <input type="number" id="calib-mm" min="0" step="0.1" placeholder="例: 100"><span>mm</span>
+            <button type="button" id="calib-clear" class="btn-link" aria-label="消去">消去</button>
+          </div>
+          <small id="calib-note">写真に写した定規やメジャーの目盛りを2点クリックし、その間の長さを入力します。</small>
+        </div>
+        <div class="field">
+          <label for="real-width">または、写真の横幅に写っている実際の長さ</label>
           <div class="input-unit"><input type="number" id="real-width" min="0" step="0.1" placeholder="例: 30"><span>cm</span></div>
           <small>入力すると幅を mm で表示し、危険度を判定します。定規やクラックスケールを写し込むと正確です。</small>
         </div>
