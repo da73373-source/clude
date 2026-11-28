@@ -47,16 +47,54 @@ struct ResultView: View {
             .pickerStyle(.segmented)
 
             ZStack {
-                if vm.showOverlay, let img = vm.overlay {
-                    Image(uiImage: img).resizable().scaledToFit()
-                } else if let cg = vm.baseImage {
-                    Image(decorative: cg, scale: 1).resizable().scaledToFit()
+                Group {
+                    if vm.showOverlay && !vm.isCalibrating, let img = vm.overlay {
+                        Image(uiImage: img).resizable().scaledToFit()
+                    } else if let cg = vm.baseImage {
+                        Image(decorative: cg, scale: 1).resizable().scaledToFit()
+                    }
                 }
+                .overlay { calibrationLayer }
                 if vm.isBusy { progressBadge }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            if vm.isCalibrating {
+                Label(vm.calibrationPoints.count < 2 ? "定規の目盛りの2点をタップしてください(\(vm.calibrationPoints.count)/2)" : "2点の間の長さを下に入力してください",
+                      systemImage: "hand.tap")
+                    .font(.footnote).foregroundStyle(.tint)
+            }
             if case .failed(let msg) = vm.phase {
                 Label(msg, systemImage: "exclamationmark.triangle").foregroundStyle(.red).font(.footnote)
+            }
+        }
+    }
+
+    /// 画像の上で2点をタップして縮尺を合わせるためのレイヤー
+    private var calibrationLayer: some View {
+        GeometryReader { geo in
+            let iw = CGFloat(vm.baseImage?.width ?? 1), ih = CGFloat(vm.baseImage?.height ?? 1)
+            let k = min(geo.size.width / iw, geo.size.height / ih)
+            let ox = (geo.size.width - iw * k) / 2, oy = (geo.size.height - ih * k) / 2
+            let toView = { (p: CGPoint) in CGPoint(x: ox + p.x * k, y: oy + p.y * k) }
+            ZStack {
+                if vm.calibrationPoints.count == 2 {
+                    Path { path in
+                        path.move(to: toView(vm.calibrationPoints[0]))
+                        path.addLine(to: toView(vm.calibrationPoints[1]))
+                    }
+                    .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                }
+                ForEach(Array(vm.calibrationPoints.enumerated()), id: \.offset) { _, p in
+                    Circle().stroke(Color.cyan, lineWidth: 2).background(Circle().fill(.cyan.opacity(0.3)))
+                        .frame(width: 18, height: 18).position(toView(p))
+                }
+            }
+            .contentShape(Rectangle())
+            .allowsHitTesting(vm.isCalibrating)
+            .onTapGesture { loc in
+                let x = (loc.x - ox) / k, y = (loc.y - oy) / k
+                guard x >= 0, y >= 0, x < iw, y < ih else { return }
+                vm.addCalibrationPoint(CGPoint(x: x, y: y))
             }
         }
     }
@@ -92,9 +130,41 @@ struct ResultView: View {
         }
     }
 
+    @State private var rulerText = ""
+
     private var scaleField: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("写真の横幅に写っている実際の長さ").font(.subheadline.bold())
+        VStack(alignment: .leading, spacing: 10) {
+            Text("実寸の設定").font(.headline)
+            // 方法1: 定規の2点
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("定規で合わせる(おすすめ)").font(.subheadline.bold())
+                    Spacer()
+                    Button(vm.isCalibrating ? "完了" : (vm.calibrationPoints.count == 2 ? "やり直す" : "2点を指定")) {
+                        if vm.isCalibrating { vm.isCalibrating = false; vm.redraw() }
+                        else { vm.calibrationPoints = []; vm.isCalibrating = true }
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+                if vm.calibrationPoints.count == 2 {
+                    HStack {
+                        Text(String(format: "2点の間(%.0f px)=", vm.calibrationPixelDistance ?? 0)).font(.footnote)
+                        TextField("例: 100", text: $rulerText)
+                            .keyboardType(.decimalPad).textFieldStyle(.roundedBorder)
+                            .onChange(of: rulerText) { _, t in
+                                vm.calibrationMM = Double(t.replacingOccurrences(of: ",", with: "."))
+                                vm.redraw()
+                            }
+                        Text("mm")
+                        Button("消去", systemImage: "xmark.circle.fill") { rulerText = ""; vm.clearCalibration() }
+                            .labelStyle(.iconOnly).foregroundStyle(.secondary)
+                    }
+                }
+                Text("写真に写した定規やメジャーの目盛りを2点タップし、その間の長さを入力します。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            Text("または、写真の横幅に写っている実際の長さ").font(.subheadline.bold())
             HStack {
                 TextField("例: 30", text: $widthText)
                     .keyboardType(.decimalPad)
@@ -105,8 +175,12 @@ struct ResultView: View {
                     }
                 Text("cm")
             }
-            Text("入力すると幅を mm で表示し、危険度を判定します。")
-                .font(.caption).foregroundStyle(.secondary)
+            if let src = vm.scaleSourceDescription {
+                Label(src, systemImage: "checkmark.circle").font(.caption).foregroundStyle(.green)
+            } else {
+                Text("入力すると幅を mm で表示し、危険度を判定します。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 

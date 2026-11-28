@@ -13,6 +13,29 @@ final class DetectionViewModel {
     var showOverlay = true
     var selectedCrack: Int?
 
+    /// 定規で縮尺を合わせる: 画像上の2点(解析解像度の画素座標)と、その間の実寸(mm)
+    var isCalibrating = false
+    var calibrationPoints: [CGPoint] = []
+    var calibrationMM: Double?
+
+    var calibrationPixelDistance: Double? {
+        guard calibrationPoints.count == 2 else { return nil }
+        let a = calibrationPoints[0], b = calibrationPoints[1]
+        return Double(hypot(a.x - b.x, a.y - b.y))
+    }
+
+    func addCalibrationPoint(_ p: CGPoint) {
+        if calibrationPoints.count >= 2 { calibrationPoints = [] }
+        calibrationPoints.append(p)
+    }
+
+    func clearCalibration() {
+        calibrationPoints = []
+        calibrationMM = nil
+        isCalibrating = false
+        redraw()
+    }
+
     private(set) var baseImage: CGImage?
     private(set) var analysis: CrackAnalysis?
     private(set) var overlay: UIImage?
@@ -29,8 +52,16 @@ final class DetectionViewModel {
 
     /// 1画素あたりの mm
     var mmPerPixel: Double? {
+        // 定規による縮尺を優先
+        if let mm = calibrationMM, mm > 0, let d = calibrationPixelDistance, d >= 5 { return mm / d }
         guard let cm = realWidthCm, cm > 0, let a = analysis else { return nil }
         return cm * 10 / Double(a.width)
+    }
+
+    var scaleSourceDescription: String? {
+        if let mm = calibrationMM, mm > 0, calibrationPixelDistance != nil { return String(format: "定規の2点(%.0f mm)で縮尺を設定中", mm) }
+        if let cm = realWidthCm, cm > 0 { return String(format: "写真の横幅 %.1f cm で縮尺を設定中", cm) }
+        return nil
     }
 
     func severity(of c: Crack) -> Severity {
@@ -58,6 +89,7 @@ final class DetectionViewModel {
     func load(_ image: UIImage) {
         analyzeTask?.cancel()
         baseImage = nil; analysis = nil; overlay = nil; probability = nil; selectedCrack = nil
+        calibrationPoints = []; calibrationMM = nil; isCalibrating = false
         guard let cg = CrackModel.normalizedImage(image) else { phase = .failed("画像を読み込めませんでした"); return }
         baseImage = cg
         phase = model == nil ? .loadingModel : .inferring(0)
