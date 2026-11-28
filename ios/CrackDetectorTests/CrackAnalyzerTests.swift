@@ -50,6 +50,29 @@ final class CrackAnalyzerTests: XCTestCase {
         XCTAssertTrue(r.cracks.isEmpty)
     }
 
+    /// AI の出力が太い帯でも、写真の暗さから細いひびの幅を正しく測る
+    func testHairlineWidthFromDarkness() {
+        let w = 300, h = 120
+        var gray = [Float](repeating: 150, count: w * h)
+        var prob = [Float](repeating: 0, count: w * h)
+        for x in 20..<280 {
+            for y in 59...60 { gray[y * w + x] = 70 }          // 幅2pxの暗い線
+            for y in 50...69 { prob[y * w + x] = 0.9 }         // AI は幅20pxの帯を出力
+        }
+        // 軽いざらつき
+        var seed: UInt32 = 1
+        for i in 0..<(w * h) { seed = seed &* 1664525 &+ 1013904223; gray[i] += Float(seed >> 28) - 8 }
+
+        let regionOnly = CrackAnalyzer.analyze(probability: prob, width: w, height: h, options: AnalyzerOptions())
+        let withGray = CrackAnalyzer.analyze(probability: prob, gray: CrackAnalyzer.boxMean(gray, w, h, 1), width: w, height: h, options: AnalyzerOptions())
+        let r = try! XCTUnwrap(regionOnly.cracks.first), d = try! XCTUnwrap(withGray.cracks.first)
+        XCTAssertGreaterThan(r.maxWidthPx, 15, "領域の幅は帯の太さになる")
+        XCTAssertTrue(d.widthFromDarkness)
+        XCTAssertLessThanOrEqual(d.maxWidthPx, 6, "暗さから測ると細いひびの幅になる")
+        XCTAssertGreaterThanOrEqual(d.meanWidthPx, 1)
+        XCTAssertLessThanOrEqual(d.meanWidthPx, d.maxWidthPx + 1e-9)
+    }
+
     func testSeverity() {
         XCTAssertEqual(Severity(maxWidthMM: nil), .unknown)
         XCTAssertEqual(Severity(maxWidthMM: 0.2), .hairline)

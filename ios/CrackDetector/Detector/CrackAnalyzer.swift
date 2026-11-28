@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// 1本のひび割れの計測結果
 struct Crack: Identifiable, Hashable {
@@ -8,6 +9,8 @@ struct Crack: Identifiable, Hashable {
     let lengthPx: Double
     let meanWidthPx: Double
     let maxWidthPx: Double
+    /// 幅を写真の暗さから測ったか(false: AIの領域の幅)
+    var widthFromDarkness: Bool = false
 }
 
 struct CGRectInt: Hashable {
@@ -36,12 +39,16 @@ struct AnalyzerOptions: Equatable {
     var minElongation: Double = 6
     /// 途切れたひびをつなげる
     var connect: Bool = true
+    /// 暗さから測った幅に掛ける係数(DeepCrack 学習画像の正解幅で校正)
+    var darkWidthScale: Double = 1.6
 }
 
 /// 確率マップからひび割れを抽出し、長さ・幅を計測する(Web版 detector.js と同じアルゴリズム)
 enum CrackAnalyzer {
 
-    static func analyze(probability prob: [Float], width w: Int, height h: Int, options opt: AnalyzerOptions) -> CrackAnalysis {
+    /// - Parameters:
+    ///   - gray: 輝度(0〜255, width*height)。渡すと幅を写真の暗さから測る(細いひびの幅の過大評価を防ぐ)
+    static func analyze(probability prob: [Float], gray: [Float]? = nil, width w: Int, height h: Int, options opt: AnalyzerOptions) -> CrackAnalysis {
         precondition(prob.count == w * h)
         let n = w * h
         let diag = (Double(w * w + h * h)).squareRoot()
@@ -85,8 +92,31 @@ enum CrackAnalyzer {
         var skelPix: [Int32: [Int]] = [:]
         for i in 0..<n where skel[i] != 0 { skelPix[labels[i], default: []].append(i) }
 
+        // 幅は「暗さ」から測る: 各ひび領域で中心の暗さの半分以上暗い画素(半値幅)を本体とみなし、校正係数を掛ける
+        var coreWidths: [Int32: [Double]] = [:]
+        if let gray {
+            let rW = max(15, Int((Double(max(w, h)) / 30).rounded()))
+            let meanW = boxMean(gray, w, h, rW)
+            var depth = [Float](repeating: 0, count: n)
+            for i in 0..<n { depth[i] = meanW[i] - gray[i] }
+            var byComp: [Int32: [Float]] = [:]
+            for i in 0..<n where cand[i] != 0 { byComp[labels[i], default: []].append(depth[i]) }
+            var coreThr: [Int32: Float] = [:]
+            for (id, v) in byComp {
+                let sorted = v.sorted()
+                coreThr[id] = max(3, 0.5 * sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))])
+            }
+            var core = [UInt8](repeating: 0, count: n)
+            for i in 0..<n where cand[i] != 0 && depth[i] >= (coreThr[labels[i]] ?? .infinity) { core[i] = 1 }
+            let coreSkel = thin(core, w, h)
+            let coreDist = distance(core, w, h)
+            for i in 0..<n where coreSkel[i] != 0 {
+                coreWidths[labels[i], default: []].append(max(1.0, 2.0 * Double(coreDist[i]) - 1.0))
+            }
+        }
+
         // 4. 形状評価
-        struct Tmp { let id: Int32; let c: Component; let length: Double; let mean: Double; let maxW: Double }
+        struct Tmp { let id: Int32; let c: Component; let length: Double; let mean: Double; let maxW: Double; let dark: Bool }
         var found: [Tmp] = []
         for c in comps where keep[c.id] {
             guard let pix = skelPix[Int32(c.id)], !pix.isEmpty else { continue }
@@ -95,7 +125,14 @@ enum CrackAnalyzer {
             let mean = Double(c.area) / length
             let maxW = widths[min(widths.count - 1, Int(Double(widths.count) * 0.95))]
             if length < minLen || length / max(1, mean) < opt.minElongation { continue }
-            found.append(Tmp(id: Int32(c.id), c: c, length: length, mean: mean, maxW: maxW))
+            var meanOut = mean, maxOut = maxW, dark = false
+            if let cw = coreWidths[Int32(c.id)], Double(cw.count) >= 0.3 * Double(pix.count) {
+                let s = cw.sorted()
+                meanOut = min(mean, opt.darkWidthScale * s.reduce(0, +) / Double(s.count))
+                maxOut = min(maxW, opt.darkWidthScale * s[min(s.count - 1, Int(Double(s.count) * 0.95))])
+                dark = true
+            }
+            found.append(Tmp(id: Int32(c.id), c: c, length: length, mean: meanOut, maxW: maxOut, dark: dark))
         }
         found.sort { $0.length > $1.length }
 
@@ -105,11 +142,50 @@ enum CrackAnalyzer {
             numberOf[t.id] = Int32(k + 1)
             cracks.append(Crack(id: k + 1,
                                 bbox: CGRectInt(x: t.c.minX, y: t.c.minY, width: t.c.maxX - t.c.minX + 1, height: t.c.maxY - t.c.minY + 1),
-                                area: t.c.area, lengthPx: t.length, meanWidthPx: t.mean, maxWidthPx: t.maxW))
+                                area: t.c.area, lengthPx: t.length, meanWidthPx: t.mean, maxWidthPx: t.maxW,
+                                widthFromDarkness: t.dark))
         }
         var out = [Int32](repeating: 0, count: n)
         for i in 0..<n where cand[i] != 0 { out[i] = numberOf[labels[i]] ?? 0 }
         return CrackAnalysis(width: w, height: h, cracks: cracks, labels: out)
+    }
+
+    /// 積分画像による箱型平均(半径 r)
+    static func boxMean(_ src: [Float], _ w: Int, _ h: Int, _ r: Int) -> [Float] {
+        let W = w + 1
+        var integ = [Double](repeating: 0, count: W * (h + 1))
+        for y in 0..<h {
+            var row = 0.0
+            for x in 0..<w {
+                row += Double(src[y * w + x])
+                integ[(y + 1) * W + x + 1] = integ[y * W + x + 1] + row
+            }
+        }
+        var out = [Float](repeating: 0, count: w * h)
+        for y in 0..<h {
+            let y0 = max(0, y - r), y1 = min(h, y + r + 1)
+            for x in 0..<w {
+                let x0 = max(0, x - r), x1 = min(w, x + r + 1)
+                let s = integ[y1 * W + x1] - integ[y0 * W + x1] - integ[y1 * W + x0] + integ[y0 * W + x0]
+                out[y * w + x] = Float(s / Double((x1 - x0) * (y1 - y0)))
+            }
+        }
+        return out
+    }
+
+    /// RGB 画像の輝度(3x3 平均で軽く平滑化。Web 版と同じ)
+    static func luminance(_ cg: CGImage) -> [Float]? {
+        let w = cg.width, h = cg.height
+        var buf = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &buf, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var g = [Float](repeating: 0, count: w * h)
+        for i in 0..<(w * h) {
+            g[i] = 0.299 * Float(buf[i * 4]) + 0.587 * Float(buf[i * 4 + 1]) + 0.114 * Float(buf[i * 4 + 2])
+        }
+        return boxMean(g, w, h, 1)
     }
 
     // MARK: - 形態演算

@@ -274,10 +274,10 @@
     }
     if (opt.connect) mask = erode(dilate(mask, w, h), w, h);
 
-    return analyze(mask, diff, w, h, opt, diag, thr);
+    return analyze(mask, diff, gray, w, h, opt, diag, thr);
   }
 
-  function analyze(mask, diff, w, h, opt, diag, thr) {
+  function analyze(mask, diff, gray, w, h, opt, diag, thr) {
     // 4. 連結成分と粗い足切り
     const minLen = (opt.minLengthPct / 100) * diag;
     const { labels, comps } = label(mask, w, h);
@@ -301,6 +301,40 @@
       skelPix.get(id).push(i);
     }
 
+    // 幅は「暗さ」から測る: 各ひび領域で、中心の暗さの半分以上暗い画素(半値幅)を本体とみなし、
+    // DeepCrack の正解幅で校正した係数を掛ける(AIの出力領域は細いひびでは実際より太くなるため)
+    const rW = Math.max(15, Math.round(Math.max(w, h) / 30));
+    const meanW = boxMean(gray, w, h, rW);
+    const depth = new Float32Array(w * h);
+    for (let i = 0; i < depth.length; i++) depth[i] = meanW[i] - gray[i];
+    const byComp = new Map();
+    for (let i = 0; i < cand.length; i++) {
+      if (!cand[i]) continue;
+      const id = labels[i];
+      if (!byComp.has(id)) byComp.set(id, []);
+      byComp.get(id).push(depth[i]);
+    }
+    const coreThr = new Map();
+    for (const [id, v] of byComp) {
+      v.sort((a, b) => a - b);
+      coreThr.set(id, Math.max(3, 0.5 * v[Math.floor(v.length * 0.9)]));
+    }
+    const core = new Uint8Array(w * h);
+    for (let i = 0; i < core.length; i++) if (cand[i] && depth[i] >= coreThr.get(labels[i])) core[i] = 1;
+    const coreSkel = thin(core, w, h);
+    const coreDist = distance(core, w, h);
+    const coreArea = new Map(), coreWidths = new Map();
+    for (let i = 0; i < core.length; i++) {
+      if (!core[i]) continue;
+      const id = labels[i];
+      coreArea.set(id, (coreArea.get(id) || 0) + 1);
+      if (coreSkel[i]) {
+        if (!coreWidths.has(id)) coreWidths.set(id, []);
+        coreWidths.get(id).push(Math.max(1, 2 * coreDist[i] - 1));
+      }
+    }
+    const K = opt.darkWidthScale ?? 1.6;  // DeepCrack 学習画像の正解幅で校正
+
     // 7. 形状評価
     const cracks = [];
     const finalLabels = new Int32Array(w * h);
@@ -315,6 +349,16 @@
       const elong = length / Math.max(1, meanWidth);
       if (length < minLen || elong < opt.minElongation) continue;
 
+      // 幅(暗さベース、校正済み)。暗い本体が見つからなければ領域の幅を使う
+      let meanWidthPx = meanWidth, maxWidthPx = maxWidth, widthSource = "region";
+      const cw = coreWidths.get(c.id), ca = coreArea.get(c.id) || 0;
+      if (opt.widthFromDarkness !== false && cw && cw.length >= 0.3 * pix.length && ca > 0) {
+        cw.sort((a, b) => a - b);
+        meanWidthPx = Math.min(meanWidth, K * cw.reduce((a, b) => a + b, 0) / cw.length);
+        maxWidthPx = Math.min(maxWidth, K * (cw[Math.floor(cw.length * 0.95)] || cw[cw.length - 1]));
+        widthSource = "darkness";
+      }
+
       // ひびの暗さ(コントラスト)
       let contrast = 0;
       for (const i of pix) contrast += diff[i];
@@ -325,8 +369,9 @@
         bbox: { x: c.minX, y: c.minY, w: c.maxX - c.minX + 1, h: c.maxY - c.minY + 1 },
         area: c.area,
         lengthPx: length,
-        meanWidthPx: meanWidth,
-        maxWidthPx: maxWidth,
+        meanWidthPx,
+        maxWidthPx,
+        widthSource,
         contrast,
       });
     }

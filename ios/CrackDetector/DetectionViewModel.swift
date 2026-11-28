@@ -40,6 +40,7 @@ final class DetectionViewModel {
     private(set) var analysis: CrackAnalysis?
     private(set) var overlay: UIImage?
     private var probability: [Float]?
+    private var luminance: [Float]?
     private var model: CrackModel?
     private var analyzeTask: Task<Void, Never>?
 
@@ -88,7 +89,7 @@ final class DetectionViewModel {
 
     func load(_ image: UIImage) {
         analyzeTask?.cancel()
-        baseImage = nil; analysis = nil; overlay = nil; probability = nil; selectedCrack = nil
+        baseImage = nil; analysis = nil; overlay = nil; probability = nil; luminance = nil; selectedCrack = nil
         calibrationPoints = []; calibrationMM = nil; isCalibrating = false
         guard let cg = CrackModel.normalizedImage(image) else { phase = .failed("画像を読み込めませんでした"); return }
         baseImage = cg
@@ -103,6 +104,7 @@ final class DetectionViewModel {
                     try m.predict(cg) { p in Task { @MainActor in if case .inferring = self.phase { self.phase = .inferring(p) } } }
                 }.value
                 if Task.isCancelled { return }
+                self.luminance = await Task.detached { CrackAnalyzer.luminance(cg) }.value
                 self.probability = prob
                 await self.reanalyze()
             } catch {
@@ -124,9 +126,9 @@ final class DetectionViewModel {
     private func reanalyze() async {
         guard let prob = probability, let cg = baseImage else { return }
         phase = .analyzing
-        let opt = options, w = cg.width, h = cg.height
+        let opt = options, w = cg.width, h = cg.height, lum = luminance
         let result = await Task.detached(priority: .userInitiated) {
-            CrackAnalyzer.analyze(probability: prob, width: w, height: h, options: opt)
+            CrackAnalyzer.analyze(probability: prob, gray: lum, width: w, height: h, options: opt)
         }.value
         if Task.isCancelled { return }
         analysis = result
